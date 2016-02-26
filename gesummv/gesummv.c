@@ -4,41 +4,34 @@
 #include <math.h>
 #include <stdlib.h>
 
-void gesummv(int n, int blocksize, double alpha, double beta, double * A, double * B, double * x, double * Ay)
+void gesummv(int n, double alpha, double beta, double * A, double * B, double * x, double * Ay)
 {
-
-	int i,j,block;
+	int i,j;
 	double t1 = 0;
 	double t2 = 0;
 
-	int blocknum=n/blocksize;
 	/* Accelerator */
-#pragma acc data copyin(x[0:n]) create(A[0:n*n],B[0:n*n],Ay[0:n])
-	for (block=0; block<blocknum; block++)
+#pragma acc kernels copyin(A[0:n*n],B[0,n*n]) copyout(Ay[0:n])
+{
+#pragma acc loop independent vector(32)
+	for (i = 0; i < n; i++)
 	{
-		int ystart=block*blocksize;
-		int yend=ystart+blocksize;
-		/* async data transfer and computation for overlap */
-#pragma acc update device(A[ystart*n:n*blocksize],B[ystart*n:n*blocksize]) async(block%4) /* 4 stream is used here */
-#pragma acc parallel loop private(t1, t2) async(block%4)
-		for (i = ystart; i < yend; i++)
-		{
-			for (j = 0; j < n; j++)
-			{
-				Ay[i] += alpha * A[i*n + j ] * x[j] + beta * B[i*n + j] * x[j];
-			}
-		}	
-#pragma acc update self(Ay[ystart:blocksize]) async(block%4)
-	} /* End data */
-#pragma acc wait
-
+		t1 = 0;
+		t2 = 0;
+#pragma acc loop independent worker(32)
+		for (j = 0; j < n; j++)
+	    {
+			t1 += A[i*n + j] * x[j];
+			t2 += B[i*n + j] * x[j];
+		}
+		Ay[i] = alpha * t1 + beta * t2;
+	}
 }
 
 int main(int argc, char **argv) 
 {
 
 	int n = atoi(*(argv + 1));
-	int blocksize = ( argc > 1 ) ? atoi(argv[2]) : 8;
 
 	struct timeval t_time1, t_time2;
 	double time=0;
@@ -72,10 +65,10 @@ int main(int argc, char **argv)
 	}
 
 	/* Warm up */
-	gesummv(n, blocksize, alpha, beta, B, A, x , Hy);
+	gesummv(n, alpha, beta, B, A, x , Hy);
 
 	gettimeofday(&t_time1, NULL);
-	gesummv(n, blocksize, alpha, beta, A, B, x , Ay);
+	gesummv(n, alpha, beta, A, B, x , Ay);
 	gettimeofday(&t_time2, NULL);
 
 	/* Free malloc'd memory to prevent leaks */
